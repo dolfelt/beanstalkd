@@ -34,6 +34,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define CMD_RELEASE "release "
 #define CMD_BURY "bury "
 #define CMD_KICK "kick "
+#define CMD_KICK_JOB "kick-job "
 #define CMD_TOUCH "touch "
 #define CMD_STATS "stats"
 #define CMD_JOBSTATS "stats-job "
@@ -59,6 +60,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define CMD_RELEASE_LEN CONSTSTRLEN(CMD_RELEASE)
 #define CMD_BURY_LEN CONSTSTRLEN(CMD_BURY)
 #define CMD_KICK_LEN CONSTSTRLEN(CMD_KICK)
+#define CMD_KICK_JOB_LEN CONSTSTRLEN(CMD_KICK_JOB)
 #define CMD_TOUCH_LEN CONSTSTRLEN(CMD_TOUCH)
 #define CMD_STATS_LEN CONSTSTRLEN(CMD_STATS)
 #define CMD_JOBSTATS_LEN CONSTSTRLEN(CMD_JOBSTATS)
@@ -114,6 +116,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
 #define OP_RELEASE 5
 #define OP_BURY 6
 #define OP_KICK 7
+#define OP_KICK_JOB 25
 #define OP_STATS 8
 #define OP_JOBSTATS 9
 #define OP_PEEK_BURIED 10
@@ -152,6 +155,7 @@ size_t job_data_size_limit = JOB_DATA_SIZE_LIMIT_DEFAULT;
     "cmd-ignore: %" PRIu64 "\n" \
     "cmd-bury: %" PRIu64 "\n" \
     "cmd-kick: %" PRIu64 "\n" \
+    "cmd-kick-job: %" PRIu64 "\n" \
     "cmd-touch: %" PRIu64 "\n" \
     "cmd-stats: %" PRIu64 "\n" \
     "cmd-stats-job: %" PRIu64 "\n" \
@@ -242,6 +246,7 @@ static const char * op_names[] = {
     CMD_RELEASE,
     CMD_BURY,
     CMD_KICK,
+    CMD_KICK_JOB,
     CMD_STATS,
     CMD_JOBSTATS,
     CMD_PEEK_BURIED,
@@ -596,6 +601,32 @@ kick_jobs(Srv *s, tube t, uint n)
 }
 
 static job
+kick_job(Srv *s, job j)
+{
+    int r;
+    job j;
+    int z;
+
+    if(!j || (j->r.state != Buried && j->r.state != Delayed) return NULL;
+
+    j = remove_buried_job(j) ? :
+        remove_delayed_job(j);
+
+    z = walresvupdate(&s->wal, j);
+    if (!z) return heapinsert(&t->delay, j), NULL; /* put it back */
+    j->walresv += z;
+
+    j->r.kick_ct++;
+    r = enqueue_job(s, j, 0, 1);
+    if (r == 1) return j;
+
+    /* ready queue is full, so bury it */
+    bury_job(s, j, 0);
+    return NULL;
+
+}
+
+static job
 remove_buried_job(job j)
 {
     if (!j || j->r.state != Buried) return NULL;
@@ -717,6 +748,7 @@ which_cmd(conn c)
     TEST_CMD(c->cmd, CMD_RELEASE, OP_RELEASE);
     TEST_CMD(c->cmd, CMD_BURY, OP_BURY);
     TEST_CMD(c->cmd, CMD_KICK, OP_KICK);
+    TEST_CMD(c->cmd, CMD_KICK_JOB, OP_KICK_JOB);
     TEST_CMD(c->cmd, CMD_TOUCH, OP_TOUCH);
     TEST_CMD(c->cmd, CMD_JOBSTATS, OP_JOBSTATS);
     TEST_CMD(c->cmd, CMD_STATS_TUBE, OP_STATS_TUBE);
@@ -867,6 +899,7 @@ fmt_stats(char *buf, size_t size, void *x)
             op_ct[OP_IGNORE],
             op_ct[OP_BURY],
             op_ct[OP_KICK],
+            op_ct[OP_KICK_JOB],
             op_ct[OP_TOUCH],
             op_ct[OP_STATS],
             op_ct[OP_JOBSTATS],
@@ -1370,6 +1403,21 @@ dispatch_cmd(conn c)
         i = kick_jobs(c->srv, c->use, count);
 
         return reply_line(c, STATE_SENDWORD, "KICKED %u\r\n", i);
+    case OP_KICK_JOB:
+        errno = 0;
+        id = strtoull(c->cmd + CMD_KICK_JOB_LEN, &end_buf, 10);
+        if (errno) return twarn("strtoull"), reply_msg(c, MSG_BAD_FORMAT);
+
+        op_ct[type]++
+
+        j = kick_job(c->srv, job_find(id));
+
+        if(j) {
+            return reply_line(c, STATE_SENDWORD, "KICKED_JOB\r\n");
+        } else {
+            return reply(c, MSG_NOTFOUND, MSG_NOTFOUND_LEN, STATE_SENDWORD);
+        }
+        break;
     case OP_TOUCH:
         errno = 0;
         id = strtoull(c->cmd + CMD_TOUCH_LEN, &end_buf, 10);

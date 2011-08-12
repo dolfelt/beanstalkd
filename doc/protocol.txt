@@ -395,6 +395,21 @@ KICKED <count>\r\n
 
  - <count> is an integer indicating the number of jobs actually kicked.
 
+The kick-job command operates similar to the "kick" command, but allows you to
+choose the job to kick. You can kick buried and delayed jobs only.
+
+kick-job <id>\r\n
+
+ - <id> is the job id.
+
+The client then waits for one line of response, which may be:
+
+ - "KICKED_JOB\r\n" to indicate success.
+
+ - "NOT_FOUND\r\n" if the job does not exist or is not either delayed, or 
+   buried. This could happen if the delayed job ran before the client sent 
+   the kick-job command.
+
 The stats-job command gives statistical information about the specified job if
 it exists. Its form is:
 
@@ -543,6 +558,8 @@ of strings to scalars. It contains these keys:
  - "cmd-bury" is the cumulative number of bury commands.
 
  - "cmd-kick" is the cumulative number of kick commands.
+
+ - "cmd-kick-job" is the cumulative number of kick-job commands.
 
  - "cmd-stats" is the cumulative number of stats commands.
 
